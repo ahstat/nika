@@ -775,18 +775,13 @@ def emit(cases, out_path):
 
 def extract_matched_yaml_experiments(argv):
     """
-    Extract the cases that MATCH between two YAML files (on the
-    (scenario, topo_size, problem) triple, using the same resync/alignment as
-    compare_cases.py) and write them to a new YAML.
-
-    The emitted cases are taken from yaml1 (full objects, including their inject
-    blocks) so the output keeps whatever detail yaml1 carries. Order is preserved.
-
-    Usage:
-        python3 extract_matched.py <yaml1 large> <yaml2 smaller> <out.yaml>
+    Extract the cases of yaml2 from yaml1 (keyed on the unique
+    (scenario, topo_size, problem) triple, order-independent) and write
+    them to out.yaml, keeping yaml1's full objects (inject blocks etc.).
+    Output preserves yaml2's order.
     """
     if len(argv) != 3:
-        sys.stderr.write("usage: python3 extract_matched.py <yaml1> <yaml2> <out.yaml>\n")
+        sys.stderr.write("usage: extract_matched <yaml1 large> <yaml2 smaller> <out.yaml>\n")
         return 2
     p1, p2, out = argv
 
@@ -796,32 +791,42 @@ def extract_matched_yaml_experiments(argv):
         return data["cases"] if isinstance(data, dict) else data
 
     def triple(c):
-        return (c.get("scenario"), c.get("topo_size"), c.get("problem"))
-
+        t = c.get("topo_size")
+        if t in ("-", "", "null", "None"):
+            t = None
+        return (str(c.get("scenario")).strip(), t, str(c.get("problem")).strip())
+    
     A = load_cases(p1)
     B = load_cases(p2)
-    TA = [triple(c) for c in A]
-    TB = [triple(c) for c in B]
 
-    i = j = 0
-    matched = []
-    while i < len(TA) and j < len(TB):
-        if TA[i] == TB[j]:
-            matched.append(A[i])   # keep yaml1's full object
-            i += 1
-            j += 1
-        else:
-            # A[i] missing from B at this point: advance A only, hold B[j]
-            i += 1
+    lookup = {}
+    dups = []
+    for c in A:
+        k = triple(c)
+        if k in lookup:
+            dups.append(k)
+        lookup[k] = c
+    if dups:
+        sys.stderr.write(f"ERROR: {len(dups)} duplicate key(s) in {p1}; triple not unique.\n")
+        for k in dups[:10]:
+            sys.stderr.write(f"  dup: {k}\n")
+        return 3
+
+    matched, missing = [], []
+    for c in B:
+        hit = lookup.get(triple(c))
+        (matched if hit is not None else missing).append(hit if hit is not None else triple(c))
 
     emit(matched, out)
     print(f"yaml1 = {p1}: {len(A)} cases")
     print(f"yaml2 = {p2}: {len(B)} cases")
     print(f"matched written to {out}: {len(matched)} cases")
+    if missing:
+        sys.stderr.write(f"WARNING: {len(missing)} yaml2 case(s) not found in yaml1:\n")
+        for k in missing[:20]:
+            sys.stderr.write(f"  {k}\n")
+        return 1
     return 0
-
-    #if __name__ == "__main__":
-    #    sys.exit(main(sys.argv[1:]))
 
 def csv_to_yaml_converter(csv_path, out_path, full_path):
     """
@@ -925,7 +930,9 @@ if __name__ == "__main__":
     benchmark_full_filepath = Path(git_path) / 'benchmark' / 'additional_splits' / 'inputs' / 'benchmark_full.yaml'
     benchmark_selected_640_yaml_filepath = Path(git_path) / 'benchmark' / 'additional_splits' / 'outputs' / 'benchmark_selected_640.yaml'
     argv = (benchmark_full_filepath, benchmark_selected_640_yaml_tmp_filepath, benchmark_selected_640_yaml_filepath)
+    print("A")
     extract_matched_yaml_experiments(argv)  # shape of arvg: (input large, input small, output small) --> in the process, the missing elements of small are completed
+    print("B")
     benchmark_selected_640_yaml_tmp_filepath.unlink(missing_ok=True) # clean the tmp elements
     # *Conclusion*: the output `benchmark_selected_640.yaml` has the 640 fully completed experiments, 
     # matchs the old csv (in size) and the new yaml (subset of the full 685 experiments) 
@@ -948,5 +955,14 @@ if __name__ == "__main__":
     # (I put the number to indicate the number of current experiments, need to be updated if this is changing)
     # benchmark_selected_56 is fully included into benchmark_full_685
     # There are 55 out of 56 cases that are included in the 640 file (missing: (ospf_enterprise_dhcp, s, dhcp_spoofed_subnet))
-    shutil.copy(Path(git_path) / 'benchmark' / 'benchmark_full.yaml'    , git_path / general_output_path / 'benchmark_full_685.yaml')
-    shutil.copy(Path(git_path) / 'benchmark' / 'benchmark_selected.yaml', git_path / general_output_path / 'benchmark_selected_56.yaml')
+    def count_cases(yaml_path):
+        with open(yaml_path) as f:
+            return sum(1 for line in f if line.lstrip().startswith("- scenario:"))
+
+    for name in ["benchmark_full", "benchmark_selected"]:
+        src = Path(git_path) / 'benchmark' / f'{name}.yaml'
+        n = count_cases(src)
+        shutil.copy(src, general_output_path / f'{name}_{n}.yaml')
+
+    #shutil.copy(Path(git_path) / 'benchmark' / 'benchmark_full.yaml'    , git_path / general_output_path / 'benchmark_full_685.yaml')
+    #shutil.copy(Path(git_path) / 'benchmark' / 'benchmark_selected.yaml', git_path / general_output_path / 'benchmark_selected_56.yaml')
